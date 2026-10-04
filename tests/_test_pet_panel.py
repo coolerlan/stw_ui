@@ -20,6 +20,7 @@
 import random
 import os
 import sys
+import tempfile
 import time
 
 # 仓库根 + stw_ui 包目录进 sys.path（从 __file__ 推，不写死绝对路径）
@@ -191,9 +192,10 @@ print("OK 界面：5 行、★满档、空槽「空」、缺等级「同步中�
 import queue                                      # noqa: E402
 
 sa = stw_engine.sa
-# 样本日志在 tests/data/ 下（重构后不再和源码混在仓库根）
-stw_engine.LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "data", "_test_pet_log.jsonl")
+# ⚠ LOG 是 Engine.run() 的**写**目标（每次跑都会重写）。
+#   别指向 tests/data/ 下那份样本——那样每跑一次测试，git 里就多一次无意义改动。
+#   和其他测试一样写临时目录；tests/data/_test_pet_log.jsonl 只当格式样本留着。
+stw_engine.LOG = os.path.join(tempfile.gettempdir(), "_test_pet_panel_log.jsonl")
 ACCOUNT = "testacct"
 KEY = sa.make_l2_key(ACCOUNT)
 
