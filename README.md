@@ -27,15 +27,14 @@
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 
-:: 2. 启动（无黑窗）
+:: 2. 启动
 双击 启动控制台.vbs
 :: 或者要看输出的调试版
 启动控制台.bat
 ```
 
-需要本机已安装游戏（`stw_config.py` 里的 `GAME_EXE` / `GAME_CWD` 指向你的安装目录），
-且 L2 编解码模块 `dumpcap_realtime_stream_vNN_encounter_rescue.py` 可用
-（默认在 `~/Downloads/` 下找版本号最高的那份，也可用环境变量 `SA_CODEC` 指定）。
+需要本机已下载石器时代2.5（`stw_config.py` 里的 `sa_2903.exe` / `GAME_CWD` 指向你的安装目录），
+且 L2 编解码模块 `dumpcap_realtime_stream_v31_encounter_rescue.py` 可用
 
 ## 目录结构
 
@@ -87,10 +86,6 @@ sqsd_py/
 ├── requirements.txt
 └── .gitignore
 ```
-
-> `auto_encounter.py` / `_frida_agent.py` / `_mapdata.py` 不在你列的那份清单里，
-> 但 `stw_engine.py` 和 `stw_process.py` 在 import 阶段就要用它们，缺了控制台直接起不来，
-> 所以一起收进了 `stw_ui/`。
 
 ### 分层约束
 
