@@ -1,0 +1,20 @@
+# STW 0.30 控制台运行依赖（Python >= 3.13，Windows）
+#
+# 装法：
+#   python -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# ⚠ tkinter 是标准库，但 Windows 版 Python 安装时要勾 "tcl/tk and IDLE"，
+#   没勾的话 import tkinter 会直接 ImportError，控制台起不来。
+
+# 进程注入 / 发包钩子：整个项目的地基
+frida>=17.0.0
+
+# 枚举 sa_2903.exe 进程、读内存、判存活
+psutil>=7.0.0
+
+# 窗口/进程句柄操作（win32gui / win32con / win32process）
+pywin32>=306
+
+# 可选：命令行下用 frida-tools 做手工诊断（frida-ps / frida-trace）
+frida-tools>=14.0.0
