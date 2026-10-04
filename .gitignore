@@ -1,0 +1,67 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# ---- 运行环境 ----
+.venv/
+venv/
+
+# ---- IDE ----
+.idea/
+.vscode/
+
+# ===================================================================
+# 运行产物（控制台每次启动都会重写，绝对不要进仓库）
+#   stw_ui_log.jsonl      抓包帧日志
+#   stw_console_log.txt   界面输出
+#   stw_heartbeat.txt     心跳（每秒一行，能长到几十 MB）
+#   stw_crash.txt         faulthandler 段错误栈
+# ===================================================================
+*.jsonl
+*.log
+stw_console_log.txt
+stw_heartbeat.txt
+stw_crash.txt
+stw_exit.txt
+stw_stdout.txt
+stw_guardian.txt
+*_out.txt
+*.pid
+*.pcapng
+*.png
+
+# 抓宠规则库是本机配置，每人不一样
+catch_rules.json
+
+# 备份 / 抓包样本
+_pre_repo_backup/
+*_backup.zip
+sqsd_py*.zip
+dump*.txt
+realtime_dump*.txt
+skip*_log.jsonl
+
+# tests/data 下的样本日志是要进仓库的（上面 *.jsonl 会误伤，这里放行）
+!tests/data/*.jsonl
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+
+# ===================================================================
+# 仓库根只保留下面这些；根目录里那批一次性调试脚本
+# （_battle_capture.py / _disasm.py / main.py / *_probe.py …）
+# 是开发过程的草稿，不进仓库，但也不从磁盘删。
+# ===================================================================
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/启动控制台.vbs
+!/启动控制台.bat
+!/stw_ui/
+!/tests/
+!/data/
