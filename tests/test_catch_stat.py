@@ -355,23 +355,24 @@ import tkinter as tk                                  # noqa: E402
 
 app = stw_ui.App()
 app.update()
+# UI 瘦身后文案精简（文档 §6.5），字段语义不变
 assert app.v_cstat.get() == \
-    "抓宠统计：HPmax命中 0 / 毒伤确认 0 / 未命中 0 / 已丢弃 0", app.v_cstat.get()
+    "统计：HP命中 0 / 毒确认 0 / 未命中 0 / 丢弃 0", app.v_cstat.get()
 print(f"OK 初始文案：{app.v_cstat.get()}")
 
 app._drain_item(("catch_stat", {
     "hpmax_matched": 12, "poison_confirmed": 3, "no_match": 47,
     "dropped": 2, "attempts": 5, "successes": 2, "unknown": 1,
     "mode": "catch"}))
-want = "抓宠统计：HPmax命中 12 / 毒伤确认 3 / 未命中 47 / 已丢弃 2"
+want = "统计：HP命中 12 / 毒确认 3 / 未命中 47 / 丢弃 2"
 assert app.v_cstat.get() == want, app.v_cstat.get()
 print(f"OK 渲染：{app.v_cstat.get()}")
 
 # dropped=0 也必须显示（文档 §9.2：四项位置固定）
 app._drain_item(("catch_stat", {"hpmax_matched": 1, "poison_confirmed": 0,
                                 "no_match": 0, "dropped": 0, "mode": "catch"}))
-assert "已丢弃 0" in app.v_cstat.get(), app.v_cstat.get()
-print("OK 已丢弃 0 也固定显示（四项位置稳定）")
+assert "丢弃 0" in app.v_cstat.get(), app.v_cstat.get()
+print("OK 丢弃 0 也固定显示（四项位置稳定）")
 assert "尝试" not in app.v_cstat.get() \
     and "确认成功" not in app.v_cstat.get() \
     and "待确认" not in app.v_cstat.get(), app.v_cstat.get()
