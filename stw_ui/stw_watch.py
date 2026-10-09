@@ -126,22 +126,50 @@ class Watcher(threading.Thread):
                 if os.path.exists(_alt):
                     reader = _alt
 
+            # 🔥 脚本不存在时必须当场报错退出，绝不能进入"重拉"循环：
+            # Popen 会立刻失败退出，而 stderr 又被丢掉，看起来就和
+            # "游戏把读取进程杀了"一模一样 —— 会无限刷屏且永远修不好
+            # （2026-10-04 重构把 _sa_reader.py 落在仓库根、stw_watch.py 进了
+            #  stw_ui/ 时踩过一次：每秒一条"正在重拉"，真实原因被 DEVNULL 吞了）。
+            if not os.path.exists(reader):
+                self.q.put(("log", "warn",
+                            f"✗ 找不到读取脚本 {reader}；监听无法启动。"
+                            f"（它必须和 stw_watch.py 同目录）"))
+                self.q.put(("dead", None))
+                return
+
             def spawn_reader():
                 try:
                     if os.path.exists(STATE_JSON):
                         os.remove(STATE_JSON)
                 except Exception:
                     pass
+                # ⚠ 别丢 stderr：读进程启动失败（语法错 / 缺模块 / 路径错）时
+                # 那是唯一的线索。用 PIPE 接住并回显到界面。
                 return subprocess.Popen(
                     [sys.executable, reader, "--pid", str(pid)],
                     cwd=os.path.dirname(reader),
                     creationflags=0x00000008 | 0x01000000 | 0x08000000,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+            def reader_err(proc):
+                """读取进程退出时把 stderr 取回来（没输出就返回空串）。"""
+                try:
+                    out = proc.communicate(timeout=1)[1]
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return ""
+                return (out or b"").decode("utf-8", "replace").strip()
 
             rp = spawn_reader()
             self.reader_proc = rp          # 关控制台时要一起收掉
             self.q.put(("log", "sys",
                         f"已启动独立读取进程 PID={rp.pid}（控制台不再直接读游戏）"))
+            reader_retries = 0
+            READER_RETRY_MAX = 12          # 连续失败到这个数就认输，别无限刷屏
 
             while not self.stop_flag.is_set():
                 if not psutil.pid_exists(pid):
@@ -158,15 +186,32 @@ class Watcher(threading.Thread):
                     self.q.put(("dead", None))
                     return
 
-                # 读取进程若被游戏杀掉，界面要活着重拉，不能跟着退出
+                # 读取进程若被游戏杀掉，界面要活着重拉，不能跟着退出。
+                # ⚠ 但"被游戏杀"和"自己启动失败"表现一样（都是立刻退出），
+                #   所以要靠 stderr 区分：有 stderr = 启动/运行出错，不是被杀。
                 if rp.poll() is not None:
+                    rc = rp.returncode
+                    err = reader_err(rp)
+                    reader_retries += 1
+                    if err or reader_retries > READER_RETRY_MAX:
+                        tail = err.splitlines()[-1] if err else ""
+                        self.q.put(("log", "warn",
+                                    f"✗ 读取进程反复退出（rc={rc}）"
+                                    f"{'：' + tail if tail else ''}"))
+                        self.q.put(("log", "warn",
+                                    "  监听停止：这不是被游戏杀掉，先按上面的报错修。"))
+                        self.q.put(("dead", None))
+                        return
                     self.q.put(("log", "warn",
                                 "读取进程被结束（游戏进入世界时会杀持有句柄者）"
-                                "— 界面存活，正在重拉…"))
+                                f"— 界面存活，正在重拉…"
+                                f"（{reader_retries}/{READER_RETRY_MAX}）"))
                     rp = spawn_reader()
                     self.reader_proc = rp
                     time.sleep(1.0)
                     continue
+                # 正常跑起来了就把计数清零：只有"连续"失败才认输
+                reader_retries = 0
 
                 try:
                     with open(STATE_JSON, encoding="utf-8") as f:

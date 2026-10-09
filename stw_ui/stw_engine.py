@@ -208,6 +208,10 @@ class Engine(threading.Thread):
         self.map_sync_t0 = 0.0                # 进入 MAP_SYNC_WAIT 的时刻
         self.map_sync_ready_at = 0.0          # 同步分够了，再等 1.5s 的时间点
         self.map_objects = []                 # 最近一次 fid=41 解出的地图对象/NPC
+        # fid=42 日志节流：它只是"地图单位同步"，快速遇敌时每秒能来十几个，
+        # 无条件打印会把日志刷爆（2026-10-07 实测 ~15 条/秒，坐标还在乱跳）。
+        self._last_map_xy = None              # 上次打印过的 (x,y)
+        self._last_map_log_t = 0.0            # 上次打印的时间戳
         # —— 宠物栏（K0~K4）——
         self.pet_panel = {s: None for s in PET_SLOTS}
         self._pet_sig = None                  # 只在数据真的变了才推给界面
@@ -258,9 +262,62 @@ class Engine(threading.Thread):
         # 2..15 全部走完仍无气力回复 -> 全局 break Engine.run()（文档 §12）
         self._global_break = False
         self._global_break_reason = ""
+        # —— fid=17 / fid=57 的坐标保险（2026-10-08）——
+        # 遇敌动画洪水期间 fid=42/43 会把 s["x"]/s["y"] 刷成地图外的野坐标
+        # （实测 60x60 的图上冒出 (87,60)/(85,99)）。fid=17 的 checksum 含
+        # x+y，坐标不对服务器直接丢包 -> 表现为「背包格 2..15 全不涨气力」。
+        self._map_wh = None        # (w, h)，None = 还没拿到地图尺寸
+        self._act_xy = None        # 最近一次确认在地图内的坐标
 
     def log(self, kind, text):
         self.q.put(("log", kind, text))
+
+    # ------------------------------------------------------------------
+    # 动作包坐标保险（2026-10-08）
+    # ------------------------------------------------------------------
+    def _note_map_size(self, mi, home):
+        """主循环拿到地图尺寸/HOME 时登记一下，供坐标保险用。"""
+        if mi is not None:
+            try:
+                self._map_wh = (int(mi.w), int(mi.h))
+            except (AttributeError, TypeError, ValueError):
+                self._map_wh = None
+        if home and self._xy_ok(*home):
+            self._act_xy = (int(home[0]), int(home[1]))
+
+    def _xy_ok(self, x, y):
+        """坐标是否可信：非 0,0 且在地图范围内。"""
+        try:
+            x, y = int(x), int(y)
+        except (TypeError, ValueError):
+            return False
+        if x <= 0 and y <= 0:
+            return False
+        if self._map_wh:
+            w, h = self._map_wh
+            if not (0 <= x < w and 0 <= y < h):
+                return False
+        return True
+
+    def _action_xy(self, snap):
+        """取一个能写进 fid=17 / fid=57 的坐标。
+
+        snap 里的 x/y 来自 fid=42/43，遇敌动画洪水时会是地图外的野值；
+        这时退回最近一次确认合法的坐标，并在日志里点出来，别默默发废包。
+        """
+        x = int(snap.get("x") or 0)
+        y = int(snap.get("y") or 0)
+        if self._xy_ok(x, y):
+            self._act_xy = (x, y)
+            return x, y
+        if self._act_xy:
+            self.log("warn", f"  ⚠ 动作包坐标异常 ({x},{y})"
+                             f"（地图 {self._map_wh or '?'}），"
+                             f"改用最近合法坐标 {self._act_xy}")
+            return self._act_xy
+        self.log("warn", f"  ⚠ 动作包坐标异常 ({x},{y}) 且无历史合法坐标，"
+                         f"仍按原值发送（服务器大概率丢弃）")
+        return x, y
 
     def _set_stop_phase(self, phase, note=""):
         """切换停止流程状态并同步给界面（界面靠它显示"是不是卡住了"）。"""
@@ -597,9 +654,9 @@ class Engine(threading.Thread):
                 "未找到可使气力上涨的道具")
             return
 
-        x = int(snap.get("x") or 0)
-        y = int(snap.get("y") or 0)
-        # ⚠ 坐标必须每次取最新：字段0/1 参与 checksum，用旧坐标服务器不认
+        # ⚠ 坐标必须每次取最新：字段0/1 参与 checksum，用旧坐标服务器不认。
+        # 但遇敌洪水期的 snap 坐标本身就是野的，所以走 _action_xy() 保险。
+        x, y = self._action_xy(snap)
         l2 = build_use_item_l2(x, y, slot, ITEM_TARGET_SELF, self.key)
         self.b.send(enc(l2))
 
@@ -629,8 +686,7 @@ class Engine(threading.Thread):
             self._fail_recovery(f"未知恢复目标 {target}")
             return
 
-        x = int(snap.get("x") or 0)
-        y = int(snap.get("y") or 0)
+        x, y = self._action_xy(snap)
         l2 = build_use_spirit_l2(x, y, HEAL_SKILL_SLOT, proto_target, self.key)
         self.b.send(enc(l2))
 
@@ -960,6 +1016,7 @@ class Engine(threading.Thread):
         AXIS = md.pick_axis(MI, *HOME) if MI else ("c", "g")
         if MI:
             self.log("sys", f"地图 {MID} {MI.w}x{MI.h}  站立格 {MI.describe(*HOME)}")
+            self._note_map_size(MI, HOME)
             if AXIS:
                 self.log("sys", f"摆动轴 {AXIS}（落点锁在 HOME ± {md.DIRS[AXIS[0]]}）")
             else:
@@ -1594,7 +1651,24 @@ class Engine(threading.Thread):
                                                 f"{'…' if len(objs) > 6 else ''}）")
                             continue
                         if fid == "42" and len(f) >= 3:
-                            self.log("map", f"  ↩ 回到地图 ({f[1]},{f[2]})")
+                            # ⚠ fid=42 是普通的"地图单位同步"包，快速遇敌时每秒能来
+                            # 十几个（坐标还会随附近单位乱跳）。它在挂机流程里不承担
+                            # 任何判定（停止流程认的是 MAP_SYNC_FIDS = 41/37/4，
+                            # 不含 42），这里唯一的作用就是"跳过后续处理"。
+                            # 所以日志必须节流，否则一条 log 把整个控制台刷爆
+                            # （2026-10-07：15 条/秒，真正的战斗日志全被冲没了）。
+                            xy = (f[1], f[2])
+                            now_m = time.time()
+                            if self.stop_phase != STOP_RUNNING:
+                                # 停止流程里它是"地图确实回来了"的证据，不打折扣
+                                self.log("map", f"  ↩ 回到地图 ({xy[0]},{xy[1]})")
+                                self._last_map_xy = xy
+                                self._last_map_log_t = now_m
+                            elif xy != self._last_map_xy \
+                                    and now_m - self._last_map_log_t >= 2.0:
+                                self.log("map", f"  ↩ 地图位置 ({xy[0]},{xy[1]})")
+                                self._last_map_xy = xy
+                                self._last_map_log_t = now_m
                             continue
                         if self.cfg["showraw"]:
                             self.log("dim", f"  fid={fid} {v[:60]}")
@@ -1740,6 +1814,8 @@ class Engine(threading.Thread):
                 # 恢复状态机没结束就绝不发新的 fid=1 遇敌走位（文档 §22）
                 if auto and self.cfg["fast_enc"] and not self._recovery_pending:
                     s = self.g.snapshot()
+                    # 顺手把「当前确认合法的坐标」记下来，供 fid=17/57 兜底
+                    self._note_map_size(MI, (s.get("x"), s.get("y")))
                     # 抖动要远小于间隔：原来 uniform(0,.4) 会把 100ms 拖到最多
                     # 500ms；改成 ±20ms，让实际间隔贴近设定值
                     jitter = random.uniform(-0.02, 0.02)
@@ -1749,6 +1825,7 @@ class Engine(threading.Thread):
                             MID = s["map"]
                             MI = md.load(MID)
                             HOME = (s["x"], s["y"])
+                            self._note_map_size(MI, HOME)
                             AXIS = md.pick_axis(MI, *HOME) if MI else ("c", "g")
                             self.log("warn", f"  地图变为 {MID}，HOME 重置 {HOME} 轴 {AXIS}")
                         # AXIS 可能在当前落点暂时找不到。不要因此停掉遇敌线程；

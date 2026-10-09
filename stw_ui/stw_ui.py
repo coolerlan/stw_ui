@@ -125,11 +125,10 @@ class PetPanel(ttk.Frame):
         ttk.Label(self, text="宠物栏",
                   font=("Microsoft YaHei", 9, "bold")).pack(anchor="w")
         ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(0, 4))
-        # 说明：只有「完整宠物列表」（>=22 段的长包）才带名字和等级，
-        # 服务器一般在进世界 / 宠物变动 / 抓到新宠时才下发，中间只有紧凑包，
-        # 所以「同步中…」是正常现象，不是卡住。
-        ttk.Label(self, text="（名字/等级来自完整宠物列表，服务器下发后刷新）",
-                  foreground="#95a5a6").pack(anchor="w")
+        # （说明行已按 UI 瘦身文档 §8.2 删除，仅保留注释：）
+        # 只有「完整宠物列表」（>=22 段的长包）才带名字和等级，服务器一般在
+        # 进世界 / 宠物变动 / 抓到新宠时才下发，中间只有紧凑包，
+        # 所以空槽显示「空」、短包期间显示「同步中…」都属正常，不是卡住。
         self.rows = []
         for _ in PET_SLOTS:
             v = tk.StringVar(value="空")
@@ -345,6 +344,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("石器时代 快速战斗控制台（原型）")
         self.geometry("1000x900")
+        # 文档 §17 Step 7：低分辨率电脑别被截断
+        self.minsize(920, 700)
         # ⚠ UI 事件队列协议已冻结（v2.1 §9）：消息 (kind, ...) 只有这 18 种：
         # log / phase / state / account / ready / dead / hook_state / auto_state /
         # stop_phase / battle_units / catch_match / catch_stat / pet_panel /
@@ -392,176 +393,18 @@ class App(tk.Tk):
         self.after(1000, self._poll_supervisor)
 
     def _build(self):
-        # ---- 启动区 ----
-        lf = ttk.LabelFrame(self, text="第一步：连接游戏（supervisor 托管，控制台不解绑会闪退）", padding=6)
-        lf.pack(fill="x", padx=8, pady=(8, 4))
-        ttk.Label(lf, text="点「连接」后由常驻 supervisor 进程拉起/持有游戏；\n"
-                           "控制台只读它的 sa_supervisor.json，不再自己开游戏进程\n"
-                           "→ 这样 Tk 窗口不会被游戏连带退出（已解决一进地图就退）",
-                  foreground="#27ae60").grid(row=0, column=0, columnspan=4, sticky="w")
-        self.v_phase = tk.StringVar(value="未连接 — 点「连接」由 supervisor 托管游戏")
-        ttk.Label(lf, textvariable=self.v_phase, foreground="#c0392b").grid(
-            row=1, column=0, columnspan=4, sticky="w")
-        self.btn_launch = ttk.Button(lf, text="连接（启动游戏）", command=self._launch)
-        self.btn_launch.grid(row=2, column=0, pady=4)
-        self.v_exist = tk.BooleanVar(value=False)
-        ttk.Checkbutton(lf, text="游戏已手动开了：只连接，不再拉新实例",
-                        variable=self.v_exist).grid(row=2, column=1, sticky="w")
-        ttk.Label(lf, text="账号:").grid(row=1, column=2, sticky="e")
-        self.v_acct = tk.StringVar(value="")
-        self.cb_acct = ttk.Combobox(lf, textvariable=self.v_acct, width=18,
-                                    state="disabled")
-        self.cb_acct.grid(row=1, column=3, sticky="w")
-        self.cb_acct.bind("<<ComboboxSelected>>", self._sync)
+        """UI 瘦身版：按「连接 / 功能 / 抓宠 / 状态 / 战斗 / 日志 / 底部」分块。
 
-        ttk.Label(lf, text="启动参数:").grid(row=2, column=0, sticky="e")
-        self.v_args = tk.StringVar(value=GAME_ARGS)
-        ttk.Entry(lf, textvariable=self.v_args, width=88).grid(
-            row=2, column=1, columnspan=3, sticky="w", pady=2)
-        ttk.Label(lf, text=f"工作目录 {GAME_CWD}（必须，改成别的目录会 0xC0000005 崩）",
-                  foreground="#7f8c8d").grid(row=3, column=1, columnspan=3, sticky="w")
-
-        # ---- 客户端列表：看清楚要操作哪个进程，绝不能选错 ----
-        row = ttk.Frame(lf)
-        row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        ttk.Button(row, text="刷新客户端列表", command=self._refresh).pack(side="left")
-        self.v_pid = tk.StringVar(value="")
-        self.cb_pid = ttk.Combobox(row, textvariable=self.v_pid, width=58,
-                                   state="readonly")
-        self.cb_pid.pack(side="left", padx=6)
-        ttk.Label(row, text="STW 拉起来的那个标着『禁止操作』，永远不会被选中",
-                  foreground="#7f8c8d").pack(side="left")
-        self.clients = []
-        self.after(400, self._refresh)
-
-        # ---- 功能开关（未就绪时置灰）----
-        self.opts = ttk.LabelFrame(self, text="第二步：功能开关（进入地图后才可用）", padding=6)
-        self.opts.pack(fill="x", padx=8)
-        self.v_enc = tk.BooleanVar(value=True)
-        self.v_bat = tk.BooleanVar(value=True)
-        self.v_mode = tk.StringVar(value="catch")
-        self.v_iv = tk.StringVar(value="0.1")
-        self.v_maxb = tk.StringVar(value="9999")
-        self.v_46 = tk.BooleanVar(value=False)
-        self.v_raw = tk.BooleanVar(value=False)
-
-        self.w_enc = ttk.Checkbutton(self.opts, text="快速遇敌", variable=self.v_enc,
-                                     command=self._sync)
-        self.w_enc.grid(row=0, column=0, sticky="w")
-        self.w_bat = ttk.Checkbutton(self.opts, text="快速战斗（勾选才跳过战斗界面）",
-                                     variable=self.v_bat, command=self._sync)
-        self.w_bat.grid(row=0, column=1, sticky="w")
-        ttk.Label(self.opts, text="  战斗指令:").grid(row=0, column=2)
-        self.w_flee = ttk.Radiobutton(self.opts, text="逃跑", value="flee",
-                                      variable=self.v_mode, command=self._pick_mode)
-        self.w_flee.grid(row=0, column=3)
-        self.w_atk = ttk.Radiobutton(self.opts, text="攻击", value="attack",
-                                     variable=self.v_mode, command=self._pick_mode)
-        self.w_atk.grid(row=0, column=4)
-        self.w_catch = ttk.Radiobutton(self.opts, text="抓宠", value="catch",
-                                       variable=self.v_mode, command=self._pick_mode)
-        self.w_catch.grid(row=0, column=5)
-
-        ttk.Label(self.opts, text="走位间隔(s):").grid(row=1, column=0, sticky="e")
-        self.w_iv = ttk.Entry(self.opts, textvariable=self.v_iv, width=6)
-        self.w_iv.grid(row=1, column=1, sticky="w")
-        ttk.Label(self.opts, text="最多场数:").grid(row=1, column=2, sticky="e")
-        self.w_maxb = ttk.Entry(self.opts, textvariable=self.v_maxb, width=6)
-        self.w_maxb.grid(row=1, column=3, sticky="w")
-        self.w_46 = ttk.Checkbutton(self.opts, text="显示 fid=46 单位更新",
-                                    variable=self.v_46, command=self._sync)
-        self.w_46.grid(row=1, column=4, sticky="w")
-        self.w_raw = ttk.Checkbutton(self.opts, text="显示其它原始包",
-                                    variable=self.v_raw, command=self._sync)
-        self.w_raw.grid(row=1, column=5, sticky="w")
-        # 进地图(state=9)后自动开启加速移动（move+ui 共 21 个补丁）
-        self.v_auto = tk.BooleanVar(value=True)
-        self.w_auto = ttk.Checkbutton(
-            self.opts, text="检测到 state=9 自动开启加速移动",
-            variable=self.v_auto, command=self._sync)
-        self.w_auto.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self.v_spd = tk.BooleanVar(value=False)
-        self.w_spd = ttk.Checkbutton(
-            self.opts, text="加速移动（STW move+ui 21 补丁）",
-            variable=self.v_spd, command=self._on_speed)
-        self.w_spd.grid(row=2, column=3, columnspan=3, sticky="w", pady=(4, 0))
-        # 游戏退出自动关控制台
-        self.v_close = tk.BooleanVar(value=True)
-        self.w_close = ttk.Checkbutton(
-            self.opts, text="我关闭游戏时，控制台自动退出",
-            variable=self.v_close, command=self._sync)
-        self.w_close.grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
-        self.btn_spdchk = ttk.Button(self.opts, text="检查加速补丁状态",
-                                     command=self._check_speed)
-        self.btn_spdchk.grid(row=3, column=3, columnspan=2, sticky="w",
-                             pady=(2, 0))
-        self.opt_widgets = [self.w_enc, self.w_bat, self.w_flee, self.w_atk,
-                            self.w_catch, self.w_iv, self.w_maxb, self.w_46,
-                            self.w_raw, self.w_spd]
-
-        # ---- 抓宠规则库（只在「抓宠」模式下启用）----
-        self._build_catch_panel()
-
-        # ---- 状态 ----
-        st = ttk.LabelFrame(self, text="状态", padding=6)
-        st.pack(fill="x", padx=8)
-        self.v_state = tk.StringVar(value="-")
-        self.v_pos = tk.StringVar(value="-")
-        self.v_cnt = tk.StringVar(value="战斗 0 / 遇敌包 0 / fid=14 0 / fid=43 0")
-        ttk.Label(st, textvariable=self.v_state, width=18).grid(row=0, column=0, sticky="w")
-        ttk.Label(st, textvariable=self.v_pos).grid(row=0, column=1, sticky="w")
-        ttk.Label(st, textvariable=self.v_cnt).grid(row=0, column=2, sticky="w")
-        # 停止后用来确认「地图里的 NPC 有没有刷出来」
-        self.v_npc = tk.StringVar(value="地图/NPC：—")
-        ttk.Label(st, textvariable=self.v_npc,
-                  foreground="#16a085").grid(row=1, column=0, columnspan=3,
-                                             sticky="w", pady=(2, 0))
-
-        # ---- 战斗显示区（仿 STW：固定面积，两方对阵，不滚动日志）----
-        lf2 = ttk.LabelFrame(self, text="战斗显示区（左=敌方 / 右=我方）", padding=6)
-        lf2.pack(fill="x", padx=8, pady=6)
-        mid = ttk.Frame(lf2)
-        mid.pack(fill="x")
-        self.board = BattleBoard(mid, width=760, height=175)
-        self.board.pack(side="left")
-        self.pets = PetPanel(mid)          # 宠物栏（K0~K4，隐藏协议槽位）
-        self.pets.pack(side="left", padx=(14, 0), anchor="n")
-        self.v_round = tk.StringVar(value="回合 —")
-        ttk.Label(lf2, textvariable=self.v_round, foreground="#34495e").pack(anchor="w")
-
-        # 原始日志折叠区：调试用，默认收起，不再抢战斗面板的位置
-        lf3 = ttk.LabelFrame(self, text="原始日志（调试用）", padding=6)
-        lf3.pack(fill="both", expand=True, padx=8, pady=(0, 6))
-        self.txt = scrolledtext.ScrolledText(lf3, height=8, font=("Consolas", 9),
-                                             state="disabled")
-        self.txt.pack(fill="both", expand=True)
-        for k, c in self.TAGS.items():
-            self.txt.tag_config(k, foreground=c)
-        self.txt.tag_config("battle", font=("Consolas", 9, "bold"))
-
-        # ---- 底部 ----
-        bot = ttk.Frame(self, padding=8)
-        bot.pack(fill="x")
-        # 按钮只管「自动执行」的开/关；战斗监听进 state9 就自动挂上，
-        # 与按钮无关（文档：Hook 战斗界面 与 执行战斗策略 解耦）
-        self.btn = ttk.Button(bot, text="开始自动战斗", command=self._toggle,
-                              state="disabled")
-        self.btn.pack(side="left")
-        ttk.Button(bot, text="清空日志", command=self._clear).pack(side="left", padx=6)
-        self.v_hint = tk.StringVar(value="")
-        ttk.Label(bot, textvariable=self.v_hint, foreground="#d98a2b").pack(side="left")
-        # 监听 / 执行 两个状态分开显示，别再合成一个「开始/停止」
-        self.v_hook = tk.StringVar(value="战斗监听：未挂载")
-        self.lbl_hook = ttk.Label(bot, textvariable=self.v_hook,
-                                  foreground="#95a5a6")
-        self.lbl_hook.pack(side="left", padx=(12, 0))
-        # 注意别叫 v_auto：那个名字已经被「state=9 自动开启加速移动」占用了
-        self.v_exec = tk.StringVar(value="自动执行：关")
-        self.lbl_exec = ttk.Label(bot, textvariable=self.v_exec,
-                                  foreground="#95a5a6")
-        self.lbl_exec.pack(side="left", padx=(8, 0))
-        self.v_alive = tk.StringVar(value="● 控制台运行中")
-        ttk.Label(bot, textvariable=self.v_alive, foreground="#27ae60").pack(side="right")
+        拆成子函数只为好定位，不改任何控件变量名与绑定
+        （《UI界面瘦身更新文档》§11 / §12）。
+        """
+        self._build_connection_panel()
+        self._build_option_panel()
+        self._build_catch_panel()          # 抓宠规则库（左右并排）
+        self._build_status_panel()
+        self._build_battle_panel()
+        self._build_log_panel()
+        self._build_bottom_bar()
 
         # 控制台不许自己消失：回调异常只记不抛，关窗要确认
         self.report_callback_exception = self._tk_error
@@ -570,6 +413,236 @@ class App(tk.Tk):
         self._set_enabled(False)
         if "--launch" in sys.argv:          # 开屏自动拉起游戏，省得再点一次
             self.after(800, self._launch)
+
+    # ------------------------------------------------------------------
+    # 第一块：连接游戏（3 行）
+    # ------------------------------------------------------------------
+    def _build_connection_panel(self):
+        lf = ttk.LabelFrame(self, text="第一步：连接游戏", padding=6)
+        lf.pack(fill="x", padx=8, pady=(8, 3))
+
+        # 第 1 行：主要操作
+        r1 = ttk.Frame(lf)
+        r1.pack(fill="x")
+        self.btn_launch = ttk.Button(r1, text="连接 / 启动", command=self._launch)
+        self.btn_launch.pack(side="left")
+        self.v_exist = tk.BooleanVar(value=False)
+        self.w_exist = ttk.Checkbutton(r1, text="游戏已手动打开",
+                                       variable=self.v_exist)
+        self.w_exist.pack(side="left", padx=(8, 12))
+        ttk.Label(r1, text="账号:").pack(side="left")
+        self.v_acct = tk.StringVar(value="")
+        self.cb_acct = ttk.Combobox(r1, textvariable=self.v_acct, width=14,
+                                    state="disabled")
+        self.cb_acct.pack(side="left")
+        self.cb_acct.bind("<<ComboboxSelected>>", self._sync)
+        ttk.Label(r1, text="客户端:").pack(side="left", padx=(10, 0))
+        self.v_pid = tk.StringVar(value="")
+        self.cb_pid = ttk.Combobox(r1, textvariable=self.v_pid, width=42,
+                                   state="readonly")
+        self.cb_pid.pack(side="left")
+        ttk.Button(r1, text="刷新", command=self._refresh).pack(side="left",
+                                                                padx=(6, 0))
+        self.clients = []
+        self.after(400, self._refresh)
+
+        # 第 2 行：启动参数（长输入框交给列自动伸缩，不再写死 width=88）
+        r2 = ttk.Frame(lf)
+        r2.pack(fill="x", pady=(3, 0))
+        ttk.Label(r2, text="启动参数:").pack(side="left")
+        self.v_args = tk.StringVar(value=GAME_ARGS)
+        ttk.Entry(r2, textvariable=self.v_args).pack(side="left", fill="x",
+                                                     expand=True, padx=(4, 0))
+
+        # 第 3 行：连接状态 + 工作目录（只显示路径本身）
+        # ⚠ 「工作目录必须是 D:\zcgd2.5(new)，否则 0xC0000005 崩」是开发注意，
+        #    按文档 §4.4 从 UI 移除，保留在代码注释里：GAME_CWD 见 stw_config。
+        r3 = ttk.Frame(lf)
+        r3.pack(fill="x", pady=(3, 0))
+        self.v_phase = tk.StringVar(value="未连接 — 点「连接 / 启动」")
+        ttk.Label(r3, textvariable=self.v_phase,
+                  foreground="#c0392b").pack(side="left")
+        ttk.Label(r3, text=f"工作目录：{GAME_CWD}",
+                  foreground="#7f8c8d").pack(side="right")
+
+    # ------------------------------------------------------------------
+    # 第二块：功能设置（严格 3 行）
+    # ------------------------------------------------------------------
+    def _build_option_panel(self):
+        self.opts = ttk.LabelFrame(self, text="第二步：功能设置", padding=6)
+        self.opts.pack(fill="x", padx=8, pady=(3, 3))
+        self.v_enc = tk.BooleanVar(value=True)
+        self.v_bat = tk.BooleanVar(value=True)
+        self.v_mode = tk.StringVar(value="catch")
+        self.v_iv = tk.StringVar(value="0.1")
+        self.v_maxb = tk.StringVar(value="9999")
+        self.v_46 = tk.BooleanVar(value=False)
+        self.v_raw = tk.BooleanVar(value=False)
+
+        # 第 1 行：核心战斗功能
+        r1 = ttk.Frame(self.opts)
+        r1.pack(fill="x")
+        self.w_enc = ttk.Checkbutton(r1, text="快速遇敌", variable=self.v_enc,
+                                     command=self._sync)
+        self.w_enc.pack(side="left")
+        self.w_bat = ttk.Checkbutton(r1, text="快速战斗", variable=self.v_bat,
+                                     command=self._sync)
+        self.w_bat.pack(side="left", padx=(10, 0))
+        ttk.Label(r1, text="  战斗指令:").pack(side="left")
+        self.w_flee = ttk.Radiobutton(r1, text="逃跑", value="flee",
+                                      variable=self.v_mode,
+                                      command=self._pick_mode)
+        self.w_flee.pack(side="left")
+        self.w_atk = ttk.Radiobutton(r1, text="攻击", value="attack",
+                                     variable=self.v_mode,
+                                     command=self._pick_mode)
+        self.w_atk.pack(side="left")
+        self.w_catch = ttk.Radiobutton(r1, text="抓宠", value="catch",
+                                       variable=self.v_mode,
+                                       command=self._pick_mode)
+        self.w_catch.pack(side="left")
+
+        # 第 2 行：运行参数 + 加速
+        r2 = ttk.Frame(self.opts)
+        r2.pack(fill="x", pady=(3, 0))
+        ttk.Label(r2, text="走位间隔(s):").pack(side="left")
+        self.w_iv = ttk.Entry(r2, textvariable=self.v_iv, width=6)
+        self.w_iv.pack(side="left")
+        ttk.Label(r2, text="最多场数:").pack(side="left", padx=(10, 0))
+        self.w_maxb = ttk.Entry(r2, textvariable=self.v_maxb, width=6)
+        self.w_maxb.pack(side="left")
+        # 进地图(state=9)后自动开启加速移动（move+ui 共 21 个补丁）
+        self.v_auto = tk.BooleanVar(value=True)
+        self.w_auto = ttk.Checkbutton(r2, text="自动开启加速移动",
+                                      variable=self.v_auto, command=self._sync)
+        self.w_auto.pack(side="left", padx=(12, 0))
+        self.v_spd = tk.BooleanVar(value=False)
+        self.w_spd = ttk.Checkbutton(r2, text="加速移动",   # STW move+ui 21 补丁
+                                     variable=self.v_spd, command=self._on_speed)
+        self.w_spd.pack(side="left", padx=(10, 0))
+        self.btn_spdchk = ttk.Button(r2, text="检查状态",
+                                     command=self._check_speed)
+        self.btn_spdchk.pack(side="left", padx=(10, 0))
+
+        # 第 3 行：低频 / 调试项
+        r3 = ttk.Frame(self.opts)
+        r3.pack(fill="x", pady=(3, 0))
+        self.v_close = tk.BooleanVar(value=True)
+        self.w_close = ttk.Checkbutton(r3, text="游戏退出时关闭控制台",
+                                       variable=self.v_close, command=self._sync)
+        self.w_close.pack(side="left")
+        ttk.Label(r3, text="  调试:", foreground="#7f8c8d").pack(side="left")
+        self.w_46 = ttk.Checkbutton(r3, text="fid=46 单位更新",
+                                    variable=self.v_46, command=self._sync)
+        self.w_46.pack(side="left")
+        self.w_raw = ttk.Checkbutton(r3, text="其它原始包",
+                                     variable=self.v_raw, command=self._sync)
+        self.w_raw.pack(side="left", padx=(8, 0))
+
+        # ⚠ opt_widgets 是 _set_enabled() 批量启停的名单，必须保留原有集合。
+        #   w_auto / w_close / btn_spdchk 原本就不在里面（纯本地设置），
+        #   按文档 §5.4「不确定就不要扩张改动范围」，本次不扩大名单。
+        self.opt_widgets = [self.w_enc, self.w_bat, self.w_flee, self.w_atk,
+                            self.w_catch, self.w_iv, self.w_maxb, self.w_46,
+                            self.w_raw, self.w_spd]
+
+    # ------------------------------------------------------------------
+    # 状态条（1~2 行，不再做成小卡片）
+    # ------------------------------------------------------------------
+    def _build_status_panel(self):
+        st = ttk.Frame(self, padding=(8, 2))
+        st.pack(fill="x", padx=8, pady=(3, 0))
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=8)
+        self.v_state = tk.StringVar(value="-")
+        self.v_pos = tk.StringVar(value="-")
+        self.v_cnt = tk.StringVar(value="战斗 0 / 遇敌包 0 / fid=14 0 / fid=43 0")
+        r1 = ttk.Frame(st)
+        r1.pack(fill="x")
+        ttk.Label(r1, textvariable=self.v_state, width=18).pack(side="left")
+        ttk.Label(r1, textvariable=self.v_pos).pack(side="left", padx=(8, 0))
+        ttk.Label(r1, textvariable=self.v_cnt).pack(side="left", padx=(8, 0))
+        # 停止后用来确认「地图里的 NPC 有没有刷出来」
+        self.v_npc = tk.StringVar(value="地图/NPC：—")
+        ttk.Label(st, textvariable=self.v_npc,
+                  foreground="#16a085").pack(anchor="w")
+
+    # ------------------------------------------------------------------
+    # 战斗显示区（视觉中心，不做压缩）
+    # ------------------------------------------------------------------
+    def _build_battle_panel(self):
+        lf2 = ttk.LabelFrame(self, text="战斗", padding=6)
+        lf2.pack(fill="x", padx=8, pady=(3, 3))
+        mid = ttk.Frame(lf2)
+        mid.pack(fill="x")
+        self.board = BattleBoard(mid, width=760, height=175)
+        self.board.pack(side="left")
+        self.pets = PetPanel(mid)          # 宠物栏（K0~K4，隐藏协议槽位）
+        self.pets.pack(side="left", padx=(14, 0), anchor="n")
+        self.v_round = tk.StringVar(value="回合 —")
+        ttk.Label(lf2, textvariable=self.v_round,
+                  foreground="#34495e").pack(anchor="w")
+
+    # ------------------------------------------------------------------
+    # 原始日志：真正可折叠（默认收起，self.txt 永不销毁）
+    # ------------------------------------------------------------------
+    def _build_log_panel(self):
+        log_wrap = ttk.Frame(self)
+        log_wrap.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        self.log_expanded = tk.BooleanVar(value=False)
+        self.btn_log_toggle = ttk.Button(
+            log_wrap, text="▶ 原始日志（调试用）",
+            command=self._toggle_log_panel)
+        self.btn_log_toggle.pack(anchor="w")
+        self.log_body = ttk.Frame(log_wrap)
+        # ⚠ 默认不要 pack(self.log_body)：收起 = pack_forget，
+        #   绝不 destroy —— 后台一直在往 self.txt 里写日志。
+        self.txt = scrolledtext.ScrolledText(self.log_body, height=8,
+                                             font=("Consolas", 9),
+                                             state="disabled")
+        self.txt.pack(fill="both", expand=True)
+        for k, c in self.TAGS.items():
+            self.txt.tag_config(k, foreground=c)
+        self.txt.tag_config("battle", font=("Consolas", 9, "bold"))
+
+    def _toggle_log_panel(self):
+        on = not self.log_expanded.get()
+        self.log_expanded.set(on)
+        if on:
+            self.btn_log_toggle.configure(text="▼ 原始日志（调试用）")
+            self.log_body.pack(fill="both", expand=True, pady=(4, 0))
+        else:
+            self.btn_log_toggle.configure(text="▶ 原始日志（调试用）")
+            self.log_body.pack_forget()
+
+    # ------------------------------------------------------------------
+    # 底部操作栏
+    # ------------------------------------------------------------------
+    def _build_bottom_bar(self):
+        bot = ttk.Frame(self, padding=8)
+        bot.pack(fill="x")
+        # 按钮只管「自动执行」的开/关；战斗监听进 state9 就自动挂上，
+        # 与按钮无关（文档：Hook 战斗界面 与 执行战斗策略 解耦）
+        self.btn = ttk.Button(bot, text="开始自动战斗", command=self._toggle,
+                              state="disabled")
+        self.btn.pack(side="left")
+        ttk.Button(bot, text="清空日志", command=self._clear).pack(side="left",
+                                                                   padx=6)
+        # 自动执行紧挨按钮（它与主按钮直接相关），监听状态排在其后
+        # 注意别叫 v_auto：那个名字已经被「自动开启加速移动」占用了
+        self.v_exec = tk.StringVar(value="自动执行：关")
+        self.lbl_exec = ttk.Label(bot, textvariable=self.v_exec,
+                                  foreground="#95a5a6")
+        self.lbl_exec.pack(side="left", padx=(10, 0))
+        self.v_hook = tk.StringVar(value="战斗监听：未挂载")
+        self.lbl_hook = ttk.Label(bot, textvariable=self.v_hook,
+                                  foreground="#95a5a6")
+        self.lbl_hook.pack(side="left", padx=(10, 0))
+        self.v_hint = tk.StringVar(value="")     # 临时提示放中间
+        ttk.Label(bot, textvariable=self.v_hint,
+                  foreground="#d98a2b").pack(side="left", padx=(10, 0))
+        self.v_alive = tk.StringVar(value="● 控制台运行中")
+        ttk.Label(bot, textvariable=self.v_alive,
+                  foreground="#27ae60").pack(side="right")
 
     def _set_enabled(self, on):
         for w in self.opt_widgets:
@@ -766,23 +839,41 @@ class App(tk.Tk):
     # 抓宠 UI（规则库 + 策略 + 当前战斗匹配预览 + 统计）
     # ------------------------------------------------------------------
     def _build_catch_panel(self):
+        """左右并排：左=规则列表+管理按钮，右=策略设置+统计。
+
+        《UI界面瘦身更新文档》§6：整体高度主要由左侧 Treeview 的 height=5 决定，
+        右侧不再向下堆叠。只改排版与文案，变量名 / value / 配置语义一律不动。
+        """
         self.lf_catch = ttk.LabelFrame(
             self, text="抓宠规则库（仅「抓宠」模式生效）", padding=6)
-        self.lf_catch.pack(fill="x", padx=8, pady=(0, 4))
+        self.lf_catch.pack(fill="x", padx=8, pady=(0, 3))
+
+        body = ttk.Frame(self.lf_catch)
+        body.pack(fill="x")
+        # 左 : 右 ≈ 3 : 2（约 60% / 40%）
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+
+        # ================= 左：规则列表 + 管理按钮 =================
+        left = ttk.Frame(body)
+        left.grid(row=0, column=0, sticky="nsew")
 
         cols = ("on", "name", "lvmin", "lvmax", "lvn", "hpn")
-        self.tv_rules = ttk.Treeview(self.lf_catch, columns=cols, height=5,
+        self.tv_rules = ttk.Treeview(left, columns=cols, height=5,
                                      show="headings")
-        for c, w, t in (("on", 46, "启用"), ("name", 140, "目标名称"),
-                        ("lvmin", 64, "最低等级"), ("lvmax", 64, "最高等级"),
-                        ("lvn", 60, "等级数"), ("hpn", 72, "HP规则数")):
+        for c, w, t in (("on", 42, "启用"), ("name", 125, "目标名称"),
+                        ("lvmin", 48, "最低"), ("lvmax", 48, "最高"),
+                        ("lvn", 54, "等级数"), ("hpn", 54, "HP数")):
             self.tv_rules.heading(c, text=t)
-            self.tv_rules.column(c, width=w, anchor="center")
+            # 只让「目标名称」吃掉多出来的宽度：否则列宽合计 ~371 而控件宽 ~590，
+            # 右侧会空出一大块难看的留白（左栏是 fill="x" 的）。
+            self.tv_rules.column(c, width=w, anchor="center",
+                                 stretch=(c == "name"))
         self.tv_rules.pack(fill="x")
         self.tv_rules.bind("<Double-1>", lambda e: self._edit_rule())
 
-        br = ttk.Frame(self.lf_catch)
-        br.pack(fill="x", pady=(4, 0))
+        br = ttk.Frame(left)
+        br.pack(fill="x", pady=(3, 0))
         for txt, cmd in (("新增规则", self._new_rule),
                          ("编辑规则", self._edit_rule),
                          ("删除规则", self._del_rule),
@@ -791,84 +882,87 @@ class App(tk.Tk):
                          ("载入示例", self._load_sample)):
             ttk.Button(br, text=txt, command=cmd).pack(side="left", padx=2)
 
-        # 策略：未命中时怎么办 / 战宠动作
-        sr = ttk.Frame(self.lf_catch)
-        sr.pack(fill="x", pady=(4, 0))
+        # ================= 右：策略设置（紧凑 5 行）=================
+        right = ttk.Frame(body)
+        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         self.v_nomatch = tk.StringVar(value="flee")
         self.v_petact = tk.StringVar(value="attack")
         self.v_after = tk.StringVar(value="continue")
         self.v_stopn = tk.StringVar(value="1")
-        ttk.Label(sr, text="未命中目标时:").pack(side="left")
-        for t, v in (("逃跑", "flee"), ("普通攻击", "attack"),
-                     ("保持静默", "silent")):
-            ttk.Radiobutton(sr, text=t, value=v, variable=self.v_nomatch,
+
+        # 右 1：未命中 + 战宠
+        r1 = ttk.Frame(right)
+        r1.pack(fill="x")
+        ttk.Label(r1, text="未命中:").pack(side="left")
+        # value 仍是 flee / attack / silent，只缩显示文案
+        for t, v in (("逃跑", "flee"), ("攻击", "attack"), ("静默", "silent")):
+            ttk.Radiobutton(r1, text=t, value=v, variable=self.v_nomatch,
                             command=self._sync).pack(side="left")
-        ttk.Label(sr, text="  抓宠时战宠:").pack(side="left")
-        for t, v in (("跟随攻击(已抓包)", "attack"), ("待机(实验)", "wait")):
-            ttk.Radiobutton(sr, text=t, value=v, variable=self.v_petact,
+        ttk.Label(r1, text="战宠:").pack(side="left", padx=(8, 0))
+        # value 仍是 attack / wait（"跟随攻击(已抓包)" 缩成 "跟随"）
+        for t, v in (("跟随", "attack"), ("待机", "wait")):
+            ttk.Radiobutton(r1, text=t, value=v, variable=self.v_petact,
                             command=self._sync).pack(side="left")
 
-        sr2 = ttk.Frame(self.lf_catch)
-        sr2.pack(fill="x", pady=(2, 0))
-        ttk.Label(sr2, text="抓到后:").pack(side="left")
-        for t, v in (("继续按规则寻找", "continue"), ("抓到一只后结束本场并停止", "stop"),
-                     ("达到数量后停止", "count")):
-            ttk.Radiobutton(sr2, text=t, value=v, variable=self.v_after,
+        # 右 2：抓到后 —— 显示缩成「继续 / 抓1只后停 / 达到数量后停」，
+        #        value 仍是 continue / stop / count（文档 §6.4 明确只改显示）
+        r2 = ttk.Frame(right)
+        r2.pack(fill="x", pady=(2, 0))
+        ttk.Label(r2, text="抓到后:").pack(side="left")
+        for t, v in (("继续", "continue"), ("抓1只后停", "stop"),
+                     ("达到数量后停", "count")):
+            ttk.Radiobutton(r2, text=t, value=v, variable=self.v_after,
                             command=self._sync).pack(side="left")
-        ttk.Label(sr2, text=" 数量:").pack(side="left")
-        ttk.Entry(sr2, textvariable=self.v_stopn, width=4).pack(side="left")
+        ttk.Label(r2, text="数量:").pack(side="left", padx=(6, 0))
+        ttk.Entry(r2, textvariable=self.v_stopn, width=4).pack(side="left")
 
+        # 右 3：丢弃 + 上毒
         # 丢弃不满档（丢弃宠物.MD）：抓到的宠不是满档就发 fid=21 丢掉。
-        # 只对新抓到的宠生效，已有宠不判满档、也绝不会被丢。
-        sr3 = ttk.Frame(self.lf_catch)
-        sr3.pack(fill="x", pady=(2, 0))
+        # 只对新抓到的宠生效，已有宠不判满档、也绝不会被丢；
+        # 以服务端 fid=46 回包为准，不本地预清（细节保留在注释，不再常驻 UI）。
+        r3 = ttk.Frame(right)
+        r3.pack(fill="x", pady=(2, 0))
         self.v_dropnf = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            sr3, text="抓到非满档就丢弃（C>S fid=21，只丢本次新抓的宠）",
-            variable=self.v_dropnf, command=self._sync).pack(side="left")
-        ttk.Label(sr3, text="  丢弃以服务端 fid=46 回包为准，不本地预清",
-                  foreground="#888888").pack(side="left")
-
-        # —— 抓宠前上毒（抓宠智能筛选逻辑开发文档 v2 §3~§9）——
-        # 开之后抓宠流程变成：等级/HP上限初筛 → 猛毒 → 毒跳四维验证 → 控血 → 抓
-        # 默认关闭：会多花好几个回合，且毒伤公式目前只有理论值（见 POISON_DMG_MODES）
-        sr4 = ttk.Frame(self.lf_catch)
-        sr4.pack(fill="x", pady=(2, 0))
-        self.v_poison = tk.BooleanVar(value=True)
-        ttk.Checkbutton(sr4, text="抓宠前上毒（猛毒 J|格|目标 + 战宠待机）",
-                        variable=self.v_poison,
+        ttk.Checkbutton(r3, text="非满档自动丢弃",
+                        variable=self.v_dropnf,
                         command=self._sync).pack(side="left")
-        ttk.Label(sr4, text=" 技能格:").pack(side="left")
+        # —— 抓宠前上毒（抓宠智能筛选逻辑开发文档 v2 §3~§9）——
+        # 流程：等级/HP上限初筛 → 猛毒 J|格|目标 + 战宠待机 → 毒跳验证 → 控血 → 抓
+        self.v_poison = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r3, text="抓宠前上毒", variable=self.v_poison,
+                        command=self._sync).pack(side="left", padx=(8, 0))
+        ttk.Label(r3, text="技能:").pack(side="left", padx=(6, 0))
         self.v_pskill = tk.StringVar(value="2")
-        ttk.Entry(sr4, textvariable=self.v_pskill, width=3).pack(side="left")
-        ttk.Label(sr4, text=" 控血阈值:").pack(side="left")
+        ttk.Entry(r3, textvariable=self.v_pskill, width=3).pack(side="left")
+        ttk.Label(r3, text="控血:").pack(side="left", padx=(4, 0))
         self.v_pratio = tk.StringVar(value="0.10")
-        ttk.Entry(sr4, textvariable=self.v_pratio, width=5).pack(side="left")
+        ttk.Entry(r3, textvariable=self.v_pratio, width=5).pack(side="left")
 
-        sr5 = ttk.Frame(self.lf_catch)
-        sr5.pack(fill="x", pady=(2, 0))
-        ttk.Label(sr5, text="毒跳验证:").pack(side="left")
+        # 右 4：毒跳验证 + 毒伤口径
+        # 三档说明（只控血不判满档 / 不通过也继续抓只记日志 / 不通过就换目标）
+        # 原样保留在注释里，不再占主界面宽度。
+        r4 = ttk.Frame(right)
+        r4.pack(fill="x", pady=(2, 0))
+        ttk.Label(r4, text="毒验:").pack(side="left")
         self.v_pverify = tk.StringVar(value="strict")
-        for t, v, tip in (("关闭", "off", "只控血不判满档"),
-                          ("记录", "log", "不通过也继续抓，只在日志里提示"),
-                          ("严格", "strict", "不通过就换目标")):
-            rb = ttk.Radiobutton(sr5, text=t + f"（{tip}）", value=v,
-                                 variable=self.v_pverify, command=self._sync)
-            rb.pack(side="left")
-        ttk.Label(sr5, text=" 毒伤口径:").pack(side="left")
+        for t, v in (("关", "off"), ("记录", "log"), ("严格", "strict")):
+            ttk.Radiobutton(r4, text=t, value=v, variable=self.v_pverify,
+                            command=self._sync).pack(side="left")
+        ttk.Label(r4, text="口径:").pack(side="left", padx=(8, 0))
         self.v_pdmg = tk.StringVar(value="derived")
         # ⚠ 文案必须点明「体」是成长后的体力，不是 HP —— 早期就栽在这个误解上
-        for t, v in (("成长四维（体/攻/防/敏）", "derived"),
-                     ("原始四维（V/S/T/D）", "base")):
-            ttk.Radiobutton(sr5, text=t, value=v, variable=self.v_pdmg,
+        for t, v in (("成长四维", "derived"), ("原始四维", "base")):
+            ttk.Radiobutton(r4, text=t, value=v, variable=self.v_pdmg,
                             command=self._sync).pack(side="left")
 
+        # 右 5：抓宠统计（文案精简，字段仍是 hpmax_matched / poison_confirmed /
+        #        no_match / dropped）
         # 当前战斗匹配仍在后台计算/记录，但按界面要求不再显示独立预览行。
         self.v_match = tk.StringVar(value="")
         self.v_cstat = tk.StringVar(
-            value="抓宠统计：HPmax命中 0 / 毒伤确认 0 / 未命中 0 / 已丢弃 0")
-        ttk.Label(self.lf_catch, textvariable=self.v_cstat,
-                  foreground="#8e44ad").pack(anchor="w")
+            value="统计：HP命中 0 / 毒确认 0 / 未命中 0 / 丢弃 0")
+        ttk.Label(right, textvariable=self.v_cstat,
+                  foreground="#8e44ad").pack(anchor="w", pady=(2, 0))
 
         self._refresh_rules()
 
@@ -1326,9 +1420,9 @@ class App(tk.Tk):
             units, player = item[1]
             enemy_rows, ally_rows = units_to_slots(units, player)
             self.board.set_units(enemy_rows, ally_rows)
-            self.v_round.set(f"参战：我方 {len(ally_rows)} · "
-                             f"敌方 {len(enemy_rows)}"
-                             f"（敌方空位从 [15] 排）")
+            # 「敌方空位从 [15] 排」是协议/调试知识，按文档 §8.2 不再常驻 UI
+            self.v_round.set(f"参战：我方 {len(ally_rows)} / "
+                             f"敌方 {len(enemy_rows)}")
         elif kind == "catch_match":
             rows = item[1]
             if not rows:
@@ -1345,11 +1439,13 @@ class App(tk.Tk):
             d = item[1]
             # 四项固定显示（「已丢弃 0」也要显示，保证位置稳定）；
             # attempts / successes / unknown 不再上界面，但内部语义不变。
+            # 文案精简（UI 瘦身文档 §6.5），字段语义不变：
+            # hpmax_matched / poison_confirmed / no_match / dropped
             self.v_cstat.set(
-                f"抓宠统计：HPmax命中 {d.get('hpmax_matched', 0)} / "
-                f"毒伤确认 {d.get('poison_confirmed', 0)} / "
+                f"统计：HP命中 {d.get('hpmax_matched', 0)} / "
+                f"毒确认 {d.get('poison_confirmed', 0)} / "
                 f"未命中 {d.get('no_match', 0)} / "
-                f"已丢弃 {d.get('dropped', 0)}")
+                f"丢弃 {d.get('dropped', 0)}")
         elif kind == "hook_state":
             # 监听挂载状态：与「是否自动执行」完全无关
             on = bool(item[1])
